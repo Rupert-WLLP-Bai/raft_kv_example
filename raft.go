@@ -90,22 +90,28 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 ) (<-chan *commit, <-chan error, <-chan *snap.Snapshotter) {
 	commitC := make(chan *commit)
 	errorC := make(chan error)
-
+	// 创建data/wal和data/snapshot目录
+	if err := os.MkdirAll("data/wal", 0o750); err != nil {
+		log.Fatalf("raftexample: cannot create dir for wal (%v)", err)
+	}
+	if err := os.MkdirAll("data/snapshot", 0o750); err != nil {
+		log.Fatalf("raftexample: cannot create dir for snapshot (%v)", err)
+	}
 	rc := &raftNode{
-		proposeC:    proposeC,
-		confChangeC: confChangeC,
-		commitC:     commitC,
-		errorC:      errorC,
-		id:          id,
-		peers:       peers,
-		join:        join,
-		waldir:      fmt.Sprintf("raftexample-%d", id),
-		snapdir:     fmt.Sprintf("raftexample-%d-snap", id),
-		getSnapshot: getSnapshot,
-		snapCount:   defaultSnapshotCount,
-		stopc:       make(chan struct{}),
-		httpstopc:   make(chan struct{}),
-		httpdonec:   make(chan struct{}),
+		proposeC:    proposeC,                                             // 提议新的键值对
+		confChangeC: confChangeC,                                          // 提议集群配置变更
+		commitC:     commitC,                                              // 提交的键值对通道
+		errorC:      errorC,                                               // 错误通道
+		id:          id,                                                   // 节点 ID
+		peers:       peers,                                                // 集群节点地址列表
+		join:        join,                                                 // 是否加入现有集群
+		waldir:      fmt.Sprintf("data/wal/raftexample-%d", id),           // WAL 存储目录 (WAL是 Write-Ahead Log，用于持久化日志)
+		snapdir:     fmt.Sprintf("data/snapshot/raftexample-%d-snap", id), // 快照存储目录
+		getSnapshot: getSnapshot,                                          // 获取快照的函数
+		snapCount:   defaultSnapshotCount,                                 // 快照计数，超过此数量将触发快照
+		stopc:       make(chan struct{}),                                  // 停止信号通道
+		httpstopc:   make(chan struct{}),                                  // HTTP 服务器停止信号通道
+		httpdonec:   make(chan struct{}),                                  // HTTP 服务器完成停止信号通道
 
 		logger: zap.NewExample(),
 
@@ -219,7 +225,7 @@ func (rc *raftNode) loadSnapshot() *raftpb.Snapshot {
 // openWAL returns a WAL ready for reading.
 func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 	if !wal.Exist(rc.waldir) {
-		if err := os.Mkdir(rc.waldir, 0o750); err != nil {
+		if err := os.MkdirAll(rc.waldir, 0o750); err != nil {
 			log.Fatalf("raftexample: cannot create dir for wal (%v)", err)
 		}
 

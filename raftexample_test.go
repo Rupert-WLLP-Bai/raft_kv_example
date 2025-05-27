@@ -49,6 +49,9 @@ type cluster struct {
 
 // newCluster creates a cluster of n nodes
 func newCluster(n int) *cluster {
+	// 首先清理data目录
+	os.RemoveAll("data")
+
 	peers := make([]string, n)
 	for i := range peers {
 		peers[i] = fmt.Sprintf("http://127.0.0.1:%d", 10000+i)
@@ -93,6 +96,7 @@ func (clus *cluster) Close() (err error) {
 		os.RemoveAll(fmt.Sprintf("raftexample-%d", i+1))
 		os.RemoveAll(fmt.Sprintf("raftexample-%d-snap", i+1))
 	}
+	os.RemoveAll("data")
 	return err
 }
 
@@ -185,7 +189,7 @@ func TestPutAndGetKeyValue(t *testing.T) {
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
 	commitC, errorC, snapshotterReady := newRaftNode(1, clusters, false, getSnapshot, proposeC, confChangeC)
 
-	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC)
+	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, 1)
 
 	srv := httptest.NewServer(&httpKVAPI{
 		store:       kvs,

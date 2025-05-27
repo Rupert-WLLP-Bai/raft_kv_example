@@ -19,10 +19,13 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 
+	"github.com/rupert-wllp-bai/kvstore/storage"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -31,7 +34,8 @@ import (
 type kvstore struct {
 	proposeC    chan<- string // channel for proposing updates
 	mu          sync.RWMutex
-	kvStore     map[string]string // current committed key-value pairs
+	kvStore     map[string]string    // current committed key-value pairs
+	pebbleStore *storage.PebbleStore // 持久化存储
 	snapshotter *snap.Snapshotter
 }
 
@@ -40,8 +44,27 @@ type kv struct {
 	Val string
 }
 
-func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <-chan *commit, errorC <-chan error) *kvstore {
-	s := &kvstore{proposeC: proposeC, kvStore: make(map[string]string), snapshotter: snapshotter}
+func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <-chan *commit, errorC <-chan error, nodeID int) *kvstore {
+	// 初始化 Pebble 存储
+	// 使用传入的 nodeID 参数
+	pebblePath := fmt.Sprintf("data/pebble/pebble-%d", nodeID)
+
+	// 确保目录存在
+	if err := os.MkdirAll("data/pebble", 0755); err != nil {
+		log.Fatalf("Failed to create data directory: %v", err)
+	}
+
+	pstore, err := storage.NewPebbleStore(pebblePath)
+	if err != nil {
+		log.Fatalf("Failed to create pebble store: %v", err)
+	}
+
+	s := &kvstore{
+		proposeC:    proposeC,
+		kvStore:     make(map[string]string), // 内存缓存
+		pebbleStore: pstore,
+		snapshotter: snapshotter,
+	}
 	snapshot, err := s.loadSnapshot()
 	if err != nil {
 		log.Panic(err)
@@ -57,11 +80,27 @@ func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <
 	return s
 }
 
+// Lookup 函数添加 Pebble 查询
 func (s *kvstore) Lookup(key string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	v, ok := s.kvStore[key]
-	return v, ok
+
+	// 首先查询内存缓存
+	if v, ok := s.kvStore[key]; ok {
+		return v, true
+	}
+
+	// 内存未命中，查询 Pebble
+	if s.pebbleStore != nil {
+		if val, err := s.pebbleStore.Get([]byte(key)); err == nil && val != nil {
+			v := string(val)
+			// 更新内存缓存
+			s.kvStore[key] = v // 已有读锁，安全
+			return v, true
+		}
+	}
+
+	return "", false
 }
 
 func (s *kvstore) Propose(k string, v string) {
@@ -96,7 +135,15 @@ func (s *kvstore) readCommits(commitC <-chan *commit, errorC <-chan error) {
 				log.Fatalf("raftexample: could not decode message (%v)", err)
 			}
 			s.mu.Lock()
+			// 添加功能: 将数据写入 Pebble
+			// 更新内存
 			s.kvStore[dataKv.Key] = dataKv.Val
+			// 同步到 Pebble
+			if s.pebbleStore != nil {
+				if err := s.pebbleStore.Put([]byte(dataKv.Key), []byte(dataKv.Val)); err != nil {
+					log.Printf("Warning: failed to write to Pebble: %v", err)
+				}
+			}
 			s.mu.Unlock()
 		}
 		close(commit.applyDoneC)
@@ -128,8 +175,28 @@ func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
 	if err := json.Unmarshal(snapshot, &store); err != nil {
 		return err
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 添加功能: 恢复内存缓存
 	s.kvStore = store
+
+	// 同步到 Pebble
+	if s.pebbleStore != nil {
+		for k, v := range store {
+			if err := s.pebbleStore.Put([]byte(k), []byte(v)); err != nil {
+				log.Printf("Warning: failed to restore key %s to Pebble: %v", k, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// 关闭资源
+func (s *kvstore) Close() error {
+	if s.pebbleStore != nil {
+		return s.pebbleStore.Close()
+	}
 	return nil
 }
