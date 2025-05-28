@@ -16,6 +16,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"log"
 	"strings"
 
 	"go.etcd.io/raft/v3/raftpb"
@@ -28,6 +30,17 @@ func main() {
 	join := flag.Bool("join", false, "join an existing cluster")
 	flag.Parse()
 
+	// 加载配置
+	config, err := LoadConfig("config.json")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// 如果有节点ID，则更新Redis缓存的键前缀
+	if config.Redis.Enabled {
+		config.Redis.KeyPrefix = fmt.Sprintf("%s-%d", config.Redis.KeyPrefix, *id)
+	}
+
 	proposeC := make(chan string)
 	defer close(proposeC)
 	confChangeC := make(chan raftpb.ConfChange)
@@ -37,7 +50,7 @@ func main() {
 	var kvs *kvstore
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
 	commitC, errorC, snapshotterReady := newRaftNode(*id, strings.Split(*cluster, ","), *join, getSnapshot, proposeC, confChangeC)
-	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, *id)
+	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, *id, config)
 	defer kvs.Close()
 
 	// the key-value http handler will propose updates to raft

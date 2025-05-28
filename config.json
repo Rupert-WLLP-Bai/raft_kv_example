@@ -1,0 +1,12 @@
+{
+  "redis": {
+    "enabled": true,
+    "addr": "localhost:6379",
+    "password": "",
+    "db": 0,
+    "expiration": "10m",
+    "keyPrefix": "raft-kv",
+    "poolSize": 10,
+    "minIdleConn": 3
+  }
+}

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -189,7 +190,19 @@ func TestPutAndGetKeyValue(t *testing.T) {
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
 	commitC, errorC, snapshotterReady := newRaftNode(1, clusters, false, getSnapshot, proposeC, confChangeC)
 
-	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, 1)
+	// 加载配置
+	config, err := LoadConfig("config.json")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// 如果有节点ID，则更新Redis缓存的键前缀
+	if config.Redis.Enabled {
+		config.Redis.KeyPrefix = fmt.Sprintf("%s-%d", config.Redis.KeyPrefix, 1)
+	}
+
+	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, 1, config)
+	defer kvs.Close()
 
 	srv := httptest.NewServer(&httpKVAPI{
 		store:       kvs,
